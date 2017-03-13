@@ -87,6 +87,8 @@ enum chan_order{  // TAER -> Spektrum chan order
     AUX2,  // flip control
 };
 
+volatile int32_t Channels[CHANNELS];
+
 enum{
     CX10_GREEN,
     CX10_BLUE, // also compatible with CX10-A, CX12
@@ -104,6 +106,7 @@ static uint8_t freq[4]; // frequency hopping table
 static uint8_t packet[WD_PACKET_LENGTH];
 static uint8_t packet_length;
 static uint32_t packet_period;
+static uint32_t packet_counter;
 volatile uint16_t Servo_data[CHANNELS] = {0,};
 static uint16_t ppm[CHANNELS] = {PPM_MIN,PPM_MIN,PPM_MIN,PPM_MIN,};
 static uint8_t current_chan = 0;
@@ -270,7 +273,7 @@ static u8 cx10wd_autoland() {
     command ^= CX10WD_FLAG_LAND;
 
     // auto take off
-    // else if(GET_FLAG(CHANNEL_ARM,1) && !(btn_state & BTN_TAKEOFF)) {
+    // else if(GET_FLAG(AUX1,1) && !(btn_state & BTN_TAKEOFF)) {
     //     btn_state |= 1;
     //     btn_state &= ~2;
     //     command ^= CX10WD_FLAG_TAKEOFF;
@@ -391,6 +394,7 @@ void CX10_bind()
                     tx_addr[0] = 0x55;
                     memcpy(&tx_addr[1], txid, 4);
                     XN297_SetTXAddr(tx_addr, 5);
+                    packet_counter = 0;
                     Serial.println("CX-10 WD bound!");
                 }
                 delayMicroseconds(packet_period);
@@ -400,6 +404,40 @@ void CX10_bind()
         digitalWrite(ledPin, counter-- & 0x10);
     }
     digitalWrite(ledPin, HIGH);
+}
+
+#define BTN_TAKEOFF  1
+#define BTN_DESCEND  2
+#define CX10WD_FLAG_LAND    0x20
+#define CX10WD_FLAG_TAKEOFF 0x40
+
+static uint8_t cx10wd_getButtons() {
+
+    static uint8_t btn_state;
+    static uint8_t command;
+
+    // startup
+    if(packet_counter < 50) {
+        btn_state = 0;
+        command = 0;
+        packet_counter++;
+    }
+
+    // auto land
+    else if(GET_FLAG_LOW(AUX1,1) && !(btn_state & BTN_DESCEND)) {
+        btn_state |= BTN_DESCEND;
+        btn_state &= ~BTN_TAKEOFF;
+        command ^= CX10WD_FLAG_LAND;
+    }
+
+    // auto take off
+    else if(GET_FLAG(AUX1,1) && !(btn_state & BTN_TAKEOFF)) {
+        btn_state |= BTN_TAKEOFF;
+        btn_state &= ~BTN_DESCEND;
+        command ^= CX10WD_FLAG_TAKEOFF;
+    }
+
+    return command;
 }
 
 uint32_t process_CX10()
@@ -469,10 +507,10 @@ void CX10_Write_Packet(uint8_t init)
             packet[6] = throttle >> 8;
             packet[7] = rudder & 0xff;
             packet[8] = rudder >> 8;
-            // packet[8] |= GET_FLAG(CHANNEL_FLIP, 0x10);
-            packet[8] |= 0x00;
-            packet[9] = 0x02; // rate (0-2)
-            // packet[10]= cx10wd_getButtons(); // auto land / take off management
+            
+            packet[8] |= GET_FLAG(AUX2, 0x10);
+            packet[9]  = 0x02  // rate (0-2)
+                       | cx10wd_getButtons(); // auto land / take off management
             packet[10] = 0x00;
         }
     }
@@ -507,9 +545,9 @@ void send_control_cmd(uint16_t aileron, uint16_t elevator, uint16_t rudder, uint
     packet[7] = rudder & 0xff;
     packet[8] = rudder >> 8;
 
-    // packet[8] |= GET_FLAG(CHANNEL_FLIP, 0x10);
-    // packet[9]  = 0x02  // rate (0-2)
-    //            | cx10wd_getButtons(); // auto land / take off management
+    packet[8] |= GET_FLAG(AUX2, 0x10);
+    packet[9]  = 0x02  // rate (0-2)
+               | cx10wd_getButtons(); // auto land / take off management
     packet[10] = 0x00;
 
     // Power on, TX mode, CRC enabled
