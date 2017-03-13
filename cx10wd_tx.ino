@@ -61,7 +61,7 @@ If not, see <http://www.gnu.org/licenses/>.
 #define NUM_RF_CHANNELS    4
 #define BLUE_PACKET_PERIOD 6000
 #define GREEN_PACKET_PERIOD 1500
-#define WD_PACKET_PERIOD 3000
+#define WD_PACKET_PERIOD 2900
 static const uint8_t tx_rx_id[] = {0xCC,0xCC,0xCC,0xCC,0xCC};
 
 #define PPM_MIN 1000
@@ -69,6 +69,12 @@ static const uint8_t tx_rx_id[] = {0xCC,0xCC,0xCC,0xCC,0xCC};
 #define PPM_MID 1500
 #define PPM_MAX_COMMAND 1750
 #define PPM_MAX 2000
+
+#define CX10WD_FLAG_LAND    0x20
+#define CX10WD_FLAG_TAKEOFF 0x40
+
+#define GET_FLAG(ch, mask) (Channels[ch] > 0 ? mask : 0)
+#define GET_FLAG_LOW(ch, mask) (Channels[ch] < 0 ? mask : 0)
 
 // PPM stream settings
 #define CHANNELS 6
@@ -242,10 +248,10 @@ void setup() {
 void loop() {
     uint32_t timeout;
     // update ppm values out of ISR
-    // for(uint8_t ch=0; ch<CHANNELS; ch++) {
-    //     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-    //     ppm[ch] = Servo_data[ch];
-    // }
+    for(uint8_t ch=0; ch<CHANNELS; ch++) {
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+        ppm[ch] = Servo_data[ch];
+    }
     timeout = process_CX10();
     while(micros() < timeout)
     {   };
@@ -253,6 +259,26 @@ void loop() {
 
 ///////////////
 // CX10 functions
+static u8 cx10wd_autoland() {
+    static u8 btn_state;
+    static u8 command;
+
+    // auto land
+    btn_state |= 2;
+    btn_state &= ~1;
+    command ^= CX10WD_FLAG_LAND;
+
+    // auto take off
+    // else if(GET_FLAG(CHANNEL_ARM,1) && !(btn_state & BTN_TAKEOFF)) {
+    //     btn_state |= 1;
+    //     btn_state &= ~2;
+    //     command ^= CX10WD_FLAG_TAKEOFF;
+    // }
+
+    return command;
+}
+
+
 void CX10_init()
 {
     if (board_type != CX10_WD){
@@ -357,7 +383,7 @@ void CX10_bind()
             case CX10_WD:
                 if (counter == 0){
                     bound = true;
-                    Serial.println("bound");
+                    Serial.println("CX-10 WD found!");
                 }
                 delayMicroseconds(packet_period);
                 break;
@@ -390,6 +416,13 @@ void CX10_Write_Packet(uint8_t init)
     packet[2] = txid[1];
     packet[3] = txid[2];
     packet[4] = txid[3];
+
+    // Default values
+    aileron  = 1500;
+    elevator = 1500;
+    throttle = 1500;
+    rudder   = 1500;
+
     if (board_type != CX10_WD){
         // packet[5] to [8] (aircraft id) is filled during bind for blue board
         packet[5+offset] = lowByte(ppm[AILERON]);
@@ -414,27 +447,41 @@ void CX10_Write_Packet(uint8_t init)
 
     else {
         memset(&packet[5], 0, packet_length-5);
-        aileron  = 1500;
-        elevator = 1500;
-        throttle = 1500;
-        rudder   = 1500;
-
-        packet[1] = aileron & 0xff;
-        packet[2] = aileron >> 8;
-        packet[3] = elevator & 0xff;
-        packet[4] = elevator >> 8;
         packet[5] = throttle & 0xff;
         packet[6] = throttle >> 8;
         packet[7] = rudder & 0xff;
         packet[8] = rudder >> 8;
 
-        // packet[8] |= GET_FLAG(CHANNEL_FLIP, 0x10);
-        packet[8] = 0x00;
-        packet[9] = 0x02; // rate (0-2)
-        // packet[10]= cx10wd_getButtons(); // auto land / take off management
-        packet[10]= 0x00; // auto land / take off management
+        if (init == 0x55) { // Control data
+            packet[1] = aileron & 0xff;
+            packet[2] = aileron >> 8;
+            packet[3] = elevator & 0xff;
+            packet[4] = elevator >> 8;
+            packet[5] = throttle & 0xff;
+            packet[6] = throttle >> 8;
+            packet[7] = rudder & 0xff;
+            packet[8] = rudder >> 8;
+            // packet[8] |= GET_FLAG(CHANNEL_FLIP, 0x10);
+            packet[8] |= 0x00;
+            packet[9] = 0x02; // rate (0-2)
+            // packet[10]= cx10wd_getButtons(); // auto land / take off management
+            packet[10] = 0x00;
+        }
     }
-
+    // Serial.print("TXID = ");
+    // for (int i = 0; i < 4; i ++){
+    //     Serial.print(txid[i], HEX);
+    //     if (i < 3)
+    //         Serial.print(":");
+    // }
+    // Serial.println("");
+    // Serial.print("Sending: ");
+    // for (int i = 0; i < packet_length; i++){
+    //     Serial.print(packet[i], HEX);
+    //     if (i < packet_length - 1)
+    //         Serial.print(":");
+    // }
+    // Serial.println("");
     XN297_WritePayload(packet, packet_length);
 }
 
