@@ -54,11 +54,14 @@ If not, see <http://www.gnu.org/licenses/>.
 
 #define GREEN_PACKET_LENGTH 15
 #define BLUE_PACKET_LENGTH 19
+#define WD_PACKET_LENGTH 11
 #define RF_BIND_CHANNEL 0x02
 #define BIND_COUNT 3000
+#define WD_BIND_COUNT 1500
 #define NUM_RF_CHANNELS    4
 #define BLUE_PACKET_PERIOD 6000
 #define GREEN_PACKET_PERIOD 1500
+#define WD_PACKET_PERIOD 3000
 static const uint8_t tx_rx_id[] = {0xCC,0xCC,0xCC,0xCC,0xCC};
 
 #define PPM_MIN 1000
@@ -81,21 +84,24 @@ enum chan_order{  // TAER -> Spektrum chan order
 enum{
     CX10_GREEN,
     CX10_BLUE, // also compatible with CX10-A, CX12
+    CX10_WD,
 };
 
 ////////////////
 // Variables
-static uint8_t board_type = CX10_BLUE; // board type, change as required
+// static uint8_t board_type = CX10_BLUE; // board type, change as required
+static uint8_t board_type = CX10_WD;
 
 static uint8_t txid[4]; // transmitter ID
 static uint8_t freq[4]; // frequency hopping table
-static uint8_t packet[BLUE_PACKET_LENGTH];
+static uint8_t packet[WD_PACKET_LENGTH];
 static uint8_t packet_length;
 static uint32_t packet_period;
 volatile uint16_t Servo_data[CHANNELS] = {0,};
 static uint16_t ppm[CHANNELS] = {PPM_MIN,PPM_MIN,PPM_MIN,PPM_MIN,};
 static uint8_t current_chan = 0;
 static uint8_t ledPin = 13;
+volatile uint16_t aileron, elevator, throttle, rudder = 0;
 
 
 ////////////////
@@ -249,11 +255,23 @@ void loop() {
 // CX10 functions
 void CX10_init()
 {
-    txid[1] %= 0x30;
-    freq[0] = (txid[0] & 0x0F) + 0x03;
-    freq[1] = (txid[0] >> 4) + 0x16;
-    freq[2] = (txid[1] & 0x0F) + 0x2D;
-    freq[3] = (txid[1] >> 4) + 0x40;
+    if (board_type != CX10_WD){
+        txid[1] %= 0x30;
+        freq[0] = (txid[0] & 0x0F) + 0x03;
+        freq[1] = (txid[0] >> 4) + 0x16;
+        freq[2] = (txid[1] & 0x0F) + 0x2D;
+        freq[3] = (txid[1] >> 4) + 0x40;
+    }
+
+    else {
+        // CX-10 WD Control channels calculation
+        uint8_t offset = txid[0] & 3;
+
+        for (int i = 0; i < 4; i++){
+            freq[i] = 0x46 + i*2 + offset;
+        }
+
+    }
 
     if(board_type == CX10_BLUE) {
         packet_length = BLUE_PACKET_LENGTH;
@@ -261,9 +279,15 @@ void CX10_init()
         for(uint8_t i=0; i<4; i++)
             packet[5+i] = 0xff;
     }
+
     else if(board_type == CX10_GREEN) {
         packet_length = GREEN_PACKET_LENGTH;
         packet_period = GREEN_PACKET_PERIOD;
+    }
+
+    else if (board_type == CX10_WD){
+        packet_length = WD_PACKET_LENGTH;
+        packet_period = WD_PACKET_PERIOD;
     }
 
     current_chan = 0;
@@ -287,7 +311,15 @@ void CX10_init()
 
 void CX10_bind()
 {
-    uint16_t counter=BIND_COUNT;
+    uint16_t counter = 0;
+    if (board_type != CX10_WD){
+        counter = BIND_COUNT;
+    }
+
+    else {
+        counter = WD_BIND_COUNT;
+    }
+
     bool bound=false;
     uint32_t timeout;
     while(!bound) {
@@ -321,6 +353,15 @@ void CX10_bind()
                     }
                 }
                 break;
+
+            case CX10_WD:
+                if (counter == 0){
+                    bound = true;
+                    Serial.println("bound");
+                }
+                delayMicroseconds(packet_period);
+                break;
+
         }
         digitalWrite(ledPin, counter-- & 0x10);
     }
@@ -349,25 +390,51 @@ void CX10_Write_Packet(uint8_t init)
     packet[2] = txid[1];
     packet[3] = txid[2];
     packet[4] = txid[3];
-    // packet[5] to [8] (aircraft id) is filled during bind for blue board
-    packet[5+offset] = lowByte(ppm[AILERON]);
-    packet[6+offset]= highByte(ppm[AILERON]);
-    packet[7+offset]= lowByte(ppm[ELEVATOR]);
-    packet[8+offset]= highByte(ppm[ELEVATOR]);
-    packet[9+offset]= lowByte(ppm[THROTTLE]);
-    packet[10+offset]= highByte(ppm[THROTTLE]);
-    if(ppm[AUX2] > PPM_MID)
-        packet[10+offset] |= 0x10; // flip flag
-    packet[11+offset]= lowByte(ppm[RUDDER]);
-    packet[12+offset]= highByte(ppm[RUDDER]);
-    // rate / mode (use headless channel)
-    if(ppm[AUX1] > PPM_MAX_COMMAND) // mode 3 / headless
-        packet[13+offset] = 0x02;
-    else if(ppm[AUX1] < PPM_MIN_COMMAND) // mode 1
-        packet[13+offset] = 0x00;
-    else // mode 2
-        packet[13+offset] = 0x01;
-    packet[14+offset] = 0x00;
+    if (board_type != CX10_WD){
+        // packet[5] to [8] (aircraft id) is filled during bind for blue board
+        packet[5+offset] = lowByte(ppm[AILERON]);
+        packet[6+offset]= highByte(ppm[AILERON]);
+        packet[7+offset]= lowByte(ppm[ELEVATOR]);
+        packet[8+offset]= highByte(ppm[ELEVATOR]);
+        packet[9+offset]= lowByte(ppm[THROTTLE]);
+        packet[10+offset]= highByte(ppm[THROTTLE]);
+        if(ppm[AUX2] > PPM_MID)
+            packet[10+offset] |= 0x10; // flip flag
+        packet[11+offset]= lowByte(ppm[RUDDER]);
+        packet[12+offset]= highByte(ppm[RUDDER]);
+        // rate / mode (use headless channel)
+        if(ppm[AUX1] > PPM_MAX_COMMAND) // mode 3 / headless
+            packet[13+offset] = 0x02;
+        else if(ppm[AUX1] < PPM_MIN_COMMAND) // mode 1
+            packet[13+offset] = 0x00;
+        else // mode 2
+            packet[13+offset] = 0x01;
+        packet[14+offset] = 0x00;
+    }
+
+    else {
+        memset(&packet[5], 0, packet_length-5);
+        aileron  = 1500;
+        elevator = 1500;
+        throttle = 1500;
+        rudder   = 1500;
+
+        packet[1] = aileron & 0xff;
+        packet[2] = aileron >> 8;
+        packet[3] = elevator & 0xff;
+        packet[4] = elevator >> 8;
+        packet[5] = throttle & 0xff;
+        packet[6] = throttle >> 8;
+        packet[7] = rudder & 0xff;
+        packet[8] = rudder >> 8;
+
+        // packet[8] |= GET_FLAG(CHANNEL_FLIP, 0x10);
+        packet[8] = 0x00;
+        packet[9] = 0x02; // rate (0-2)
+        // packet[10]= cx10wd_getButtons(); // auto land / take off management
+        packet[10]= 0x00; // auto land / take off management
+    }
+
     XN297_WritePayload(packet, packet_length);
 }
 
