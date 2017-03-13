@@ -62,7 +62,7 @@ If not, see <http://www.gnu.org/licenses/>.
 #define BLUE_PACKET_PERIOD 6000
 #define GREEN_PACKET_PERIOD 1500
 #define WD_PACKET_PERIOD 2900
-static const uint8_t tx_rx_id[] = {0xCC,0xCC,0xCC,0xCC,0xCC};
+static const uint8_t bind_address[] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
 
 #define PPM_MIN 1000
 #define PPM_MIN_COMMAND 1250
@@ -99,6 +99,7 @@ enum{
 static uint8_t board_type = CX10_WD;
 
 static uint8_t txid[4]; // transmitter ID
+static uint8_t tx_addr[5]; // TX ID for data packet transmission
 static uint8_t freq[4]; // frequency hopping table
 static uint8_t packet[WD_PACKET_LENGTH];
 static uint8_t packet_length;
@@ -320,18 +321,22 @@ void CX10_init()
     NRF24L01_Reset();
     NRF24L01_Initialize();
     NRF24L01_SetTxRxMode(TX_EN);
+    // XN297_SetScrambledMode(XN297_SCRAMBLED); // Default behavior in this code
     delay(10);
-    XN297_SetTXAddr(tx_rx_id,5);
-    XN297_SetRXAddr(tx_rx_id,5);
+    XN297_SetTXAddr(bind_address,5);
+    XN297_SetRXAddr(bind_address,5);
     NRF24L01_FlushTx();
+    NRF24L01_FlushRx();
     NRF24L01_WriteReg(NRF24L01_07_STATUS, 0x70);     // Clear data ready, data sent, and retransmit
     NRF24L01_WriteReg(NRF24L01_01_EN_AA, 0x00);      // No Auto Acknowledgment on all data pipes
     NRF24L01_WriteReg(NRF24L01_11_RX_PW_P0, packet_length); // rx pipe 0 (used only for blue board)
     NRF24L01_WriteReg(NRF24L01_02_EN_RXADDR, 0x01);  // Enable data pipe 0 only
     NRF24L01_SetBitrate(NRF24L01_BR_1M);             // 1Mbps
     NRF24L01_SetPower(3);                             // maximum rf power
+    NRF24L01_Activate(0x73);                          // Activate feature register
     NRF24L01_WriteReg(NRF24L01_1C_DYNPD, 0x00);       // Disable dynamic payload length on all pipes
     NRF24L01_WriteReg(NRF24L01_1D_FEATURE, 0x00);     // Set feature bits on
+    NRF24L01_Activate(0x73);                          // Activate feature register
     delay(150);
 }
 
@@ -383,7 +388,10 @@ void CX10_bind()
             case CX10_WD:
                 if (counter == 0){
                     bound = true;
-                    Serial.println("CX-10 WD found!");
+                    tx_addr[0] = 0x55;
+                    memcpy(&tx_addr[1], txid, 4);
+                    XN297_SetTXAddr(tx_addr, 5);
+                    Serial.println("CX-10 WD bound!");
                 }
                 delayMicroseconds(packet_period);
                 break;
@@ -482,6 +490,36 @@ void CX10_Write_Packet(uint8_t init)
     //         Serial.print(":");
     // }
     // Serial.println("");
+    XN297_WritePayload(packet, packet_length);
+}
+
+void send_control_cmd(uint16_t aileron, uint16_t elevator, uint16_t rudder, uint16_t throttle) {
+    // Send control command to to a CX10-WD drone only
+    packet[0] = 0x55;           // DATA preamble
+
+    // Left & right sticks
+    packet[1] = aileron & 0xff;
+    packet[2] = aileron >> 8;
+    packet[3] = elevator & 0xff;
+    packet[4] = elevator >> 8;
+    packet[5] = throttle & 0xff;
+    packet[6] = throttle >> 8;
+    packet[7] = rudder & 0xff;
+    packet[8] = rudder >> 8;
+
+    // packet[8] |= GET_FLAG(CHANNEL_FLIP, 0x10);
+    // packet[9]  = 0x02  // rate (0-2)
+    //            | cx10wd_getButtons(); // auto land / take off management
+    packet[10] = 0x00;
+
+    // Power on, TX mode, CRC enabled
+    XN297_Configure(BV(NRF24L01_00_EN_CRC) | BV(NRF24L01_00_CRCO) | BV(NRF24L01_00_PWR_UP));
+    NRF24L01_WriteReg(NRF24L01_05_RF_CH, freq[current_chan++]);
+    current_chan %= NUM_RF_CHANNELS;
+
+    NRF24L01_WriteReg(NRF24L01_07_STATUS, 0x70);
+    NRF24L01_FlushTx();
+
     XN297_WritePayload(packet, packet_length);
 }
 
@@ -809,6 +847,28 @@ void XN297_SetTXAddr(const uint8_t* addr, int len)
     if (len > 5) len = 5;
     if (len < 3) len = 3;
     uint8_t buf[] = { 0x55, 0x0F, 0x71, 0x0C, 0x00 }; // bytes for XN297 preamble 0xC710F55 (28 bit)
+    xn297_addr_len = len;
+    if (xn297_addr_len < 4) {
+        for (int i = 0; i < 4; ++i) {
+            buf[i] = buf[i+1];
+        }
+    }
+    NRF24L01_WriteReg(NRF24L01_03_SETUP_AW, len-2);
+    NRF24L01_WriteRegisterMulti(NRF24L01_10_TX_ADDR, buf, 5);
+    // Receive address is complicated. We need to use scrambled actual address as a receive address
+    // but the TX code now assumes fixed 4-byte transmit address for preamble. We need to adjust it
+    // first. Also, if the scrambled address begins with 1 nRF24 will look for preamble byte 0xAA
+    // instead of 0x55 to ensure enough 0-1 transitions to tune the receiver. Still need to experiment
+    // with receiving signals.
+    memcpy(xn297_tx_addr, addr, len);
+}
+
+void XN297_SetTXAddrTX(const uint8_t* addr, int len)
+{
+    if (len > 5) len = 5;
+    if (len < 3) len = 3;
+    // uint8_t buf[] = { 0x55, 0x0F, 0x71, 0x0C, 0x00 }; // bytes for XN297 preamble 0xC710F55 (28 bit)
+    uint8_t buf[] = {0x55, 0xd7, 0x4a, 0x98, 0x64}; // TX ID to hijack
     xn297_addr_len = len;
     if (xn297_addr_len < 4) {
         for (int i = 0; i < 4; ++i) {
