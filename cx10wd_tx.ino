@@ -61,7 +61,7 @@ If not, see <http://www.gnu.org/licenses/>.
 #define NUM_RF_CHANNELS    4
 #define BLUE_PACKET_PERIOD 6000
 #define GREEN_PACKET_PERIOD 1500
-#define WD_PACKET_PERIOD 2900
+#define WD_PACKET_PERIOD 2850
 static const uint8_t bind_address[] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
 
 #define PPM_MIN 1000
@@ -395,7 +395,7 @@ void CX10_bind()
                     memcpy(&tx_addr[1], txid, 4);
                     XN297_SetTXAddr(tx_addr, 5);
                     packet_counter = 0;
-                    Serial.println("CX-10 WD bound!");
+                    Serial.println("CX-10 WD found!");
                 }
                 delayMicroseconds(packet_period);
                 break;
@@ -466,7 +466,7 @@ void CX10_Write_Packet(uint8_t init)
     // Default values
     aileron  = 1500;
     elevator = 1500;
-    throttle = 1500;
+    throttle = 1000;
     rudder   = 1500;
 
     if (board_type != CX10_WD){
@@ -507,7 +507,7 @@ void CX10_Write_Packet(uint8_t init)
             packet[6] = throttle >> 8;
             packet[7] = rudder & 0xff;
             packet[8] = rudder >> 8;
-            
+
             packet[8] |= GET_FLAG(AUX2, 0x10);
             packet[9]  = 0x02  // rate (0-2)
                        | cx10wd_getButtons(); // auto land / take off management
