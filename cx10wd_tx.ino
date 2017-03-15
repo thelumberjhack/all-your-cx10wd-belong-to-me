@@ -61,7 +61,7 @@ If not, see <http://www.gnu.org/licenses/>.
 #define NUM_RF_CHANNELS    4
 #define BLUE_PACKET_PERIOD 6000
 #define GREEN_PACKET_PERIOD 1500
-#define WD_PACKET_PERIOD 2850
+#define WD_PACKET_PERIOD 2500 //Seems to be the best value to hijack efficiently
 static const uint8_t bind_address[] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
 
 #define PPM_MIN 1000
